@@ -20,6 +20,7 @@
 -compile(nowarn_export_all).
 
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("common_test/include/ct.hrl").
 
 -define(ETCD_PORT, 2379).
 -define(OPTIONS, [{server, ["http://127.0.0.1:" ++ integer_to_list(?ETCD_PORT)]},
@@ -31,11 +32,16 @@
 all() -> ekka_ct:all(?MODULE).
 
 init_per_testcase(t_restart_process, Config) ->
-    case ekka_ct:is_tcp_server_available("localhost", ?ETCD_PORT) of
+    snabbkaffe:fix_ct_logging(),
+    ETCDHost = os:getenv("ETCD_HOST", "localhost"),
+    io:format(user, ">>>>>>>>> ~p~n", [ETCDHost]),
+    case ekka_ct:is_tcp_server_available(ETCDHost, ?ETCD_PORT) of
         true ->
+            ct:pal("etcd running at ~p:~w", [ETCDHost, ?ETCD_PORT]),
             application:ensure_all_started(eetcd),
-            Config;
+            [{etcd_host, ETCDHost} | Config];
         false ->
+            ct:pal("etcd not running at ~p:~w", [ETCDHost, ?ETCD_PORT]),
             {skip, no_etcd}
     end;
 init_per_testcase(_TestCase, Config) ->
@@ -88,9 +94,12 @@ t_etcd_set_node_key(_) ->
                                      end),
     {ok, #{<<"errorCode">> := 0}} = ekka_cluster_etcd:etcd_set_node_key(?OPTIONS).
 
-t_restart_process(_) ->
-    snabbkaffe:fix_ct_logging(),
-    Options = lists:keyreplace(version, 1, ?OPTIONS, {version, v3}),
+t_restart_process(Config) ->
+    ETCDHost = ?config(etcd_host, Config),
+    Options1 = lists:keyreplace(version, 1, ?OPTIONS, {version, v3}),
+    Options = lists:keyreplace(server, 1, Options1,
+                               {server, ["http://" ++ ETCDHost ++ ":"
+                                         ++ integer_to_list(?ETCD_PORT)]}),
     Node = ekka_ct:start_slave(ekka, n1, [{ekka, cluster_discovery, {etcd, Options}}]),
     try
         ok = ekka_ct:wait_running(Node),
