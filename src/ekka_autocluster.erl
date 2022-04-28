@@ -124,11 +124,22 @@ strategy_module(Strategy) ->
 discover_and_join(Mod, Options) ->
     case Mod:discover(Options) of
         {ok, Nodes} ->
-            maybe_join([N || N <- Nodes, ekka_node:is_aliving(N)]),
+            maybe_join([N || N <- Nodes, is_aliving(N)]),
             log_error("Register", Mod:register(Options));
         {error, Reason} ->
             ?LOG(error, "Discovery error: ~p", [Reason])
     end.
+
+is_aliving(Node) when Node =:= node() ->
+    true;
+is_aliving(Node) ->
+    lists:member(Node, nodes()) orelse
+        case rand:uniform(100) of
+            N when N =< 50 ->
+                net_adm:ping(Node) =:= pong;
+            _N ->
+                false
+        end.
 
 maybe_join([]) ->
     ignore;
@@ -163,4 +174,3 @@ find_oldest_node(Nodes) ->
 log_error(Format, {error, Reason}) ->
     ?LOG(error, Format ++ " error: ~p", [Reason]);
 log_error(_Format, _Ok) -> ok.
-
