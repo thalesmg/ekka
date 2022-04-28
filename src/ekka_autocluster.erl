@@ -25,6 +25,9 @@
 -define(LOG(Level, Format, Args),
         logger:Level("Ekka(AutoCluster): " ++ Format, Args)).
 
+%% ms
+-define(DISCOVER_AND_JOIN_RETRY_INTERVAL, 5000).
+
 -spec(enabled() -> boolean()).
 enabled() ->
     case ekka:env(cluster_discovery) of
@@ -40,15 +43,17 @@ run(App) ->
             spawn(fun() ->
                       group_leader(whereis(init), self()),
                       wait_application_ready(App, 10),
-                      try
-                          discover_and_join()
-                      catch
-                          _:Error:Stacktrace ->
-                              ?LOG(error, "Discover error: ~p~n~p", [Error, Stacktrace])
-                      after
-                          release_lock(App)
-                      end,
-                      maybe_run_again(App)
+                      JoinResult =
+                        try
+                            discover_and_join()
+                        catch
+                            _:Error:Stacktrace ->
+                                ?LOG(error, "Discover error: ~p~n~p", [Error, Stacktrace]),
+                                error
+                        after
+                            release_lock(App)
+                        end,
+                      maybe_run_again(App, JoinResult)
                   end);
         failed -> ignore
     end.
@@ -62,12 +67,18 @@ wait_application_ready(App, Retries) ->
                  wait_application_ready(App, Retries - 1)
     end.
 
-maybe_run_again(App) ->
+maybe_run_again(App, JoinResult) ->
     %% Check if the node joined cluster?
-    case ekka_mnesia:is_node_in_cluster() of
-        true  -> ok;
-        false -> timer:sleep(5000),
-                 run(App)
+    NodeInCluster = ekka_mnesia:is_node_in_cluster(),
+    %% Possibly there are nodes outside the cluster; keep trying if
+    %% so.
+    NoNodesOutside = JoinResult =:= ok,
+    case NodeInCluster andalso NoNodesOutside of
+        true  ->
+            ok;
+        false ->
+            timer:sleep(?DISCOVER_AND_JOIN_RETRY_INTERVAL),
+            run(App)
     end.
 
 -spec(discover_and_join() -> any()).
@@ -124,10 +135,18 @@ strategy_module(Strategy) ->
 discover_and_join(Mod, Options) ->
     case Mod:discover(Options) of
         {ok, Nodes} ->
-            maybe_join([N || N <- Nodes, ekka_node:is_aliving(N)]),
-            log_error("Register", Mod:register(Options));
+            {AliveNodes, DeadNodes} = lists:partition(
+                                        fun ekka_node:is_aliving/1,
+                                        Nodes),
+            maybe_join(AliveNodes),
+            log_error("Register", Mod:register(Options)),
+            case DeadNodes of
+                [] -> ok;
+                [_ | _] -> error
+            end;
         {error, Reason} ->
-            ?LOG(error, "Discovery error: ~p", [Reason])
+            ?LOG(error, "Discovery error: ~p", [Reason]),
+            error
     end.
 
 maybe_join([]) ->
@@ -163,4 +182,3 @@ find_oldest_node(Nodes) ->
 log_error(Format, {error, Reason}) ->
     ?LOG(error, Format ++ " error: ~p", [Reason]);
 log_error(_Format, _Ok) -> ok.
-
