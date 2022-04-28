@@ -126,6 +126,34 @@ t_autocluster_via_k8s(_Config) ->
         ok = ekka_ct:stop_slave(N1)
     end.
 
+t_autocluster_retry_when_missing_nodes(_Config) ->
+    {ok, _} = start_k8sapi_server(6000),
+    N1 = ekka_ct:start_slave(ekka, n1),
+    try
+        ThisNode = node(),
+        ok = ekka_ct:wait_running(N1),
+        ok = set_app_env(N1, {k8s, ?K8S_OPTIONS}),
+        SrcPath = proplists:get_value(source, ekka_autocluster:module_info(compile)),
+        CompileOpts = proplists:get_value(options, ekka_autocluster:module_info(compile)),
+        {ok, _Pid} = rpc:call(N1, cover, start, []),
+        {ok, _} = rpc:call(N1, cover, compile_module, [SrcPath, CompileOpts]),
+        ok = rpc:call(N1, meck, new, [ekka_node, [no_link, passthrough, no_history, non_strict]]),
+        ok = rpc:call(N1, meck, expect, [ekka_node, is_aliving,
+                                         fun(N) ->
+                                                 N =/= ThisNode
+                                         end]),
+        rpc:call(N1, ekka, autocluster, []),
+        timer:sleep(10000),
+        {ok, Stats} = rpc:call(N1, cover, analyse, [ekka_autocluster, calls, function]),
+        [TimesCalled] = [TimesCalled || {{ekka_autocluster,run,1}, TimesCalled} <- Stats],
+        ?assert(TimesCalled > 1, Stats),
+        ok
+    after
+        ekka:force_leave(N1),
+        ok = stop_k8sapi_server(6000),
+        ok = ekka_ct:stop_slave(N1)
+    end.
+
 %%--------------------------------------------------------------------
 %% Autocluster via 'mcast' strategy
 
@@ -194,4 +222,3 @@ stop_k8sapi_server(Port) ->
 
 stop_http_server(Port) ->
     inets:stop(httpd, {{127,0,0,1}, Port}).
-
