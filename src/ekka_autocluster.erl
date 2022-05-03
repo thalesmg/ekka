@@ -87,13 +87,15 @@ discover_and_join() ->
       fun(Mod, Options) ->
         case Mod:lock(Options) of
             ok ->
-                discover_and_join(Mod, Options),
-                log_error("Unlock", Mod:unlock(Options));
+                Res = discover_and_join(Mod, Options),
+                log_error("Unlock", Mod:unlock(Options)),
+                Res;
             ignore ->
                 timer:sleep(rand:uniform(3000)),
                 discover_and_join(Mod, Options);
             {error, Reason} ->
-                ?LOG(error, "AutoCluster stopped for lock error: ~p", [Reason])
+                ?LOG(error, "AutoCluster stopped for lock error: ~p", [Reason]),
+                error
         end
       end).
 
@@ -141,8 +143,12 @@ discover_and_join(Mod, Options) ->
             maybe_join(AliveNodes),
             log_error("Register", Mod:register(Options)),
             case DeadNodes of
-                [] -> ok;
-                [_ | _] -> error
+                [] ->
+                    ?LOG(info, "no discovered nodes outside cluster", []),
+                    ok;
+                [_ | _] ->
+                    ?LOG(warning, "discovered nodes outside cluster: ~p", [DeadNodes]),
+                    error
             end;
         {error, Reason} ->
             ?LOG(error, "Discovery error: ~p", [Reason]),
